@@ -602,6 +602,7 @@ set(tests
         test_security_curve
         test_security_null
         test_security_plain
+        test_stream_disconnect_notifications
         test_shutdown_stress
         test_spec_dealer
         test_spec_pushpull
