@@ -43,6 +43,7 @@
 #elif defined ZMQ_SIGNALER_WAIT_BASED_ON_SELECT
 #if defined ZMQ_HAVE_WINDOWS
 #include "windows.hpp"
+#include "winselect.hpp"
 #elif defined ZMQ_HAVE_HPUX
 #include <sys/param.h>
 #include <sys/types.h>
@@ -77,13 +78,20 @@
 #include <sys/socket.h>
 #endif
 
+
 zmq::signaler_t::signaler_t ()
 {
     //  Create the socketpair for signaling.
+#ifndef ZMQ_HAVE_WINCE
     if (make_fdpair (&r, &w) == 0) {
         unblock_socket (w);
         unblock_socket (r);
     }
+#else
+    internalEvent = WSACreateEvent();
+    InitializeCriticalSection(&cs);
+    r = (fd_t) this;
+#endif
 #ifdef HAVE_FORK
     pid = getpid();
 #endif
@@ -94,6 +102,10 @@ zmq::signaler_t::~signaler_t ()
 #if defined ZMQ_HAVE_EVENTFD
     int rc = close (r);
     errno_assert (rc == 0);
+#elif defined ZMQ_HAVE_WINCE
+    r = 0;
+    DeleteCriticalSection(&cs);
+    WSACloseEvent(internalEvent);
 #elif defined ZMQ_HAVE_WINDOWS
     struct linger so_linger = { 1, 0 };
     int rc = setsockopt (w, SOL_SOCKET, SO_LINGER,
@@ -128,6 +140,19 @@ void zmq::signaler_t::send ()
     const uint64_t inc = 1;
     ssize_t sz = write (w, &inc, sizeof (inc));
     errno_assert (sz == sizeof (inc));
+#elif defined ZMQ_HAVE_WINCE
+    EnterCriticalSection(&cs);
+
+    // Set the internal event
+    WSASetEvent(internalEvent);
+
+    // Trigger whoever is waiting.
+    std::list<fd_t>::iterator it;
+    for (it = waitingEvents.begin(); it != waitingEvents.end(); ++it) {
+        WSASetEvent((WSAEVENT) *it);
+    }
+
+    LeaveCriticalSection(&cs);
 #elif defined ZMQ_HAVE_WINDOWS
     unsigned char dummy = 0;
     int nbytes = ::send (w, (char*) &dummy, sizeof (dummy), 0);
@@ -203,10 +228,20 @@ int zmq::signaler_t::wait (int timeout_)
         timeout.tv_sec = timeout_ / 1000;
         timeout.tv_usec = timeout_ % 1000 * 1000;
     }
-#ifdef ZMQ_HAVE_WINDOWS
-    int rc = select (0, &fds, NULL, NULL,
+#ifdef ZMQ_HAVE_WINCE
+    // Directly wait for the internal event. Less elegant than
+    // using winselect() but 40% faster latency-wise on the old
+    // CE4.2 platform used for testing.
+    DWORD ret = WSAWaitForMultipleEvents(1, &internalEvent, FALSE, timeout_, FALSE);
+    wsa_assert(ret != WSA_WAIT_FAILED);
+    int rc = 0; // Timeout
+    if (ret == WSA_WAIT_EVENT_0) {
+        rc = 1;
+    }
+#elif defined ZMQ_HAVE_WINDOWS
+    int rc = winselect (0, &fds, NULL, NULL,
         timeout_ >= 0 ? &timeout : NULL);
-    wsa_assert (rc != SOCKET_ERROR);
+    zmq_assert (rc != -1);
 #else
     int rc = select (r + 1, &fds, NULL, NULL,
         timeout_ >= 0 ? &timeout : NULL);
@@ -247,7 +282,12 @@ void zmq::signaler_t::recv ()
     zmq_assert (dummy == 1);
 #else
     unsigned char dummy;
-#if defined ZMQ_HAVE_WINDOWS
+#if defined ZMQ_HAVE_WINCE
+    int nbytes = sizeof(dummy);
+    dummy = 0;
+    BOOL resetOk = WSAResetEvent(internalEvent);
+    zmq_assert(resetOk);
+#elif defined ZMQ_HAVE_WINDOWS
     int nbytes = ::recv (r, (char*) &dummy, sizeof (dummy), 0);
     wsa_assert (nbytes != SOCKET_ERROR);
 #else
@@ -322,6 +362,7 @@ int zmq::signaler_t::make_fdpair (fd_t *r_, fd_t *w_)
     *w_ = INVALID_SOCKET;
     *r_ = INVALID_SOCKET;
 
+#ifndef ZMQ_HAVE_WINCE
     //  Create listening socket.
     SOCKET listener;
     listener = open_socket (AF_INET, SOCK_STREAM, 0);
@@ -387,8 +428,19 @@ int zmq::signaler_t::make_fdpair (fd_t *r_, fd_t *w_)
     //  Release the kernel object
     brc = CloseHandle (sync);
     win_assert (brc != 0);
+#else
+    // Create a WinSock event that will be passed around like an FD.
+    // Those fake FDs _must_ be used with winselect(), a normal select()
+    // will not like them.
+    *r_ = (zmq::fd_t) WSACreateEvent();
+    int saved_errno = WSAGetLastError();
+#endif
 
+#ifndef ZMQ_HAVE_WINCE
     if (*r_ != INVALID_SOCKET) {
+#else
+    if ((WSAEVENT) *r_ != WSA_INVALID_EVENT) {
+#endif
 #   if !defined _WIN32_WCE
         //  On Windows, preventing sockets to be inherited by child processes.
         brc = SetHandleInformation ((HANDLE) *r_, HANDLE_FLAG_INHERIT, 0);
@@ -397,12 +449,14 @@ int zmq::signaler_t::make_fdpair (fd_t *r_, fd_t *w_)
         return 0;
     }
     else {
+#ifndef ZMQ_HAVE_WINCE
         //  Cleanup writer if connection failed
         if (*w_ != INVALID_SOCKET) {
             rc = closesocket (*w_);
             wsa_assert (rc != SOCKET_ERROR);
             *w_ = INVALID_SOCKET;
         }
+#endif
         //  Set errno from saved value
         errno = wsa_error_to_errno (saved_errno);
         return -1;
@@ -478,6 +532,31 @@ int zmq::signaler_t::make_fdpair (fd_t *r_, fd_t *w_)
     }
 #endif
 }
+
+#ifdef ZMQ_HAVE_WINCE
+    void zmq::signaler_t::addWaitingEvent(fd_t e) {
+        EnterCriticalSection(&cs);
+
+        // Now here's a tricky one: if the internal event is already set,
+        // no need to get into the list. Just set the event right away, because
+        // we have what we want!
+        if(WSAWaitForMultipleEvents(1, &internalEvent, FALSE, 0, FALSE) == WSA_WAIT_EVENT_0) {
+            WSASetEvent((WSAEVENT) e);
+        } else {
+            // Put the event into the list.
+            waitingEvents.push_back(e);
+        }
+
+        LeaveCriticalSection(&cs);
+    }
+
+    void zmq::signaler_t::removeWaitingEvent(fd_t e) {
+        // Normally only really called on timeout.
+        EnterCriticalSection(&cs);
+        waitingEvents.remove(e);
+        LeaveCriticalSection(&cs);
+    }
+#endif
 
 #if defined ZMQ_SIGNALER_WAIT_BASED_ON_SELECT
 #undef ZMQ_SIGNALER_WAIT_BASED_ON_SELECT
