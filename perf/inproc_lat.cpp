@@ -28,7 +28,7 @@
 
 #if defined ZMQ_HAVE_WINDOWS
 #include <windows.h>
-#include <errno.hpp>
+//#include <errno.hpp>
 #else
 #include <pthread.h>
 #endif
