@@ -126,8 +126,7 @@ int winselect (
                 DWORD err = WSAGetLastError();
                 if (err == WSAENOTSOCK) {
                     // This is not a socket! Assume it is a signaler. In this case,
-                    // we've noted down before whether it has been triggered or not
-                    // before.
+                    // we've noted down whether it has been triggered or not beforehand.
                     if (flags & FD_TRIGGERED) {
                         hasBeenTriggered = true;
                     }
@@ -141,7 +140,7 @@ int winselect (
             }
 
             if (hasBeenTriggered) {
-                // The FD has been triggered. Move it into the according fd_sets.
+                // The FD has been triggered. Move it into the corresponding fd_sets.
                 if (flags & FD_READ) {
                     readfds->fd_array[newReadFdCount++] = fd;
                 }
