@@ -555,17 +555,19 @@ int zmq::signaler_t::make_fdpair (fd_t *r_, fd_t *w_)
     }
 
     bool zmq::signaler_t::removeWaitingEvent(fd_t e) {
+
         EnterCriticalSection(&cs);
+        bool eventWasInList = false;
         if (waitingEvents.find(e) != waitingEvents.end()) {
             // The event was still in the set, so it
             // has not been triggered yet. This is
             // useful information for winselect().
             waitingEvents.erase(e);
-            return true;
-        } else {
-            return false;
+            eventWasInList = true;
         }
         LeaveCriticalSection(&cs);
+
+        return eventWasInList;
     }
 #endif
 

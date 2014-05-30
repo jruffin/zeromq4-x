@@ -78,12 +78,12 @@ int winselect (
         timeoutMs = (timeout->tv_sec*1000) + (timeout->tv_usec/1000);
     }
 
-    //printf("wait %x/%x/%d\n", eventsToWaitFor[0], eventsToWaitFor[1], timeoutMs);
-
     // Wait for any of the events...
     DWORD ret = WSAWaitForMultipleEvents(eventCount,
             eventsToWaitFor, FALSE, timeoutMs, FALSE);
     DWORD err = WSAGetLastError();
+
+    start = GetTickCount();
 
     // Deregister ourselves from the signalers
     for (i=0; i < signalerCount; ++i) {
@@ -98,8 +98,6 @@ int winselect (
             sockEvents[(zmq::fd_t) signalers[i]] |= FD_TRIGGERED;
         }
     }
-
-    WSACloseEvent(eventsToWaitFor[0]);
 
     if (ret >= WSA_WAIT_EVENT_0 && ret < WSA_WAIT_EVENT_0 + eventCount) {
 
@@ -159,15 +157,19 @@ int winselect (
         writefds->fd_count = newWriteFdCount;
         exceptfds->fd_count = newExceptFdCount;
 
+        WSACloseEvent(eventsToWaitFor[0]);
         WSASetLastError(err);
+
         return triggeredFdCount;
 
     } else if (ret == WSA_WAIT_TIMEOUT) {
         // Timeout.
+        WSACloseEvent(eventsToWaitFor[0]);
         WSASetLastError(err);
         return 0;
     } else {
         // Error.
+        WSACloseEvent(eventsToWaitFor[0]);
         WSASetLastError(err);
         return SOCKET_ERROR;
     }
