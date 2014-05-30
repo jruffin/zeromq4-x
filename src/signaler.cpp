@@ -147,10 +147,14 @@ void zmq::signaler_t::send ()
     WSASetEvent(internalEvent);
 
     // Trigger whoever is waiting.
-    std::list<fd_t>::iterator it;
+    std::set<fd_t>::iterator it;
     for (it = waitingEvents.begin(); it != waitingEvents.end(); ++it) {
         WSASetEvent((WSAEVENT) *it);
     }
+
+    // Delete the entire event set to signal whoever reacted to WSASetEvent()
+    // that we are the one who triggered the event.
+    waitingEvents.clear();
 
     LeaveCriticalSection(&cs);
 #elif defined ZMQ_HAVE_WINDOWS
@@ -543,17 +547,24 @@ int zmq::signaler_t::make_fdpair (fd_t *r_, fd_t *w_)
         if(WSAWaitForMultipleEvents(1, &internalEvent, FALSE, 0, FALSE) == WSA_WAIT_EVENT_0) {
             WSASetEvent((WSAEVENT) e);
         } else {
-            // Put the event into the list.
-            waitingEvents.push_back(e);
+            // Put the event into the set.
+            waitingEvents.insert(e);
         }
 
         LeaveCriticalSection(&cs);
     }
 
-    void zmq::signaler_t::removeWaitingEvent(fd_t e) {
-        // Normally only really called on timeout.
+    bool zmq::signaler_t::removeWaitingEvent(fd_t e) {
         EnterCriticalSection(&cs);
-        waitingEvents.remove(e);
+        if (waitingEvents.find(e) != waitingEvents.end()) {
+            // The event was still in the set, so it
+            // has not been triggered yet. This is
+            // useful information for winselect().
+            waitingEvents.erase(e);
+            return true;
+        } else {
+            return false;
+        }
         LeaveCriticalSection(&cs);
     }
 #endif

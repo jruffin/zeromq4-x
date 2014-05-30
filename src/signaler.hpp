@@ -27,7 +27,7 @@
 #include "fd.hpp"
 
 #ifdef ZMQ_HAVE_WINCE
-#include <list>
+#include <set>
 #endif
 
 namespace zmq
@@ -58,7 +58,9 @@ namespace zmq
 
 #ifdef ZMQ_HAVE_WINCE
         void addWaitingEvent(fd_t e);
-        void removeWaitingEvent(fd_t e);
+        // Returns true if the event was still in the list,
+        // i.e. it has not been triggered yet.
+        bool removeWaitingEvent(fd_t e);
 #endif
 
     private:
@@ -67,7 +69,7 @@ namespace zmq
         // The internal reference event
         WSAEVENT internalEvent;
         // The events that have to be signalled
-        std::list<fd_t> waitingEvents;
+        std::set<fd_t> waitingEvents;
         CRITICAL_SECTION cs;
 #endif
 

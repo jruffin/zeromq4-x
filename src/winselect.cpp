@@ -6,6 +6,9 @@
 // From the CE5 sources, wsock.h
 #define FD_FAILED_CONNECT   0x0100
 
+// Made-up "triggered" flag we use internally
+#define FD_TRIGGERED 0x10000
+
 int winselect (
         int nfds,
         fd_set* readfds,
@@ -84,16 +87,82 @@ int winselect (
 
     // Deregister ourselves from the signalers
     for (i=0; i < signalerCount; ++i) {
-        signalers[i]->removeWaitingEvent((zmq::fd_t) eventsToWaitFor[0]);
+        // If the method returns true, we were still in the event list
+        // of the signaler. That's a sign that the signaller is not the one
+        // that triggered us. If the method returns false the exact opposite is true:
+        // the signaler in signalers[] that does NOT have us in its list anymore has triggered us!
+        bool signalerDidNotTrigger = signalers[i]->removeWaitingEvent((zmq::fd_t) eventsToWaitFor[0]);
+
+        if (!signalerDidNotTrigger) {
+            // This signaler triggered us, note this down in the FD flags.
+            sockEvents[(zmq::fd_t) signalers[i]] |= FD_TRIGGERED;
+        }
     }
 
     WSACloseEvent(eventsToWaitFor[0]);
 
-
     if (ret >= WSA_WAIT_EVENT_0 && ret < WSA_WAIT_EVENT_0 + eventCount) {
-        // OK!
+
+        size_t newReadFdCount = 0;
+        size_t newWriteFdCount = 0;
+        size_t newExceptFdCount = 0;
+        size_t triggeredFdCount = 0;
+
+        // OK! We need to determine which FDs have been triggered, and modify the
+        // fd_sets accordingly so they only contain those.
+
+        std::map<SOCKET, long>::iterator it;
+        for (it = sockEvents.begin(); it != sockEvents.end(); ++it) {
+
+            // Did anything happen to this socket?
+            zmq::fd_t fd = (zmq::fd_t) it->first;
+            long flags = it->second;
+            bool hasBeenTriggered = false;
+
+            WSANETWORKEVENTS events;
+            int rc = WSAEnumNetworkEvents(it->first, NULL, &events);
+
+            if (rc == SOCKET_ERROR) {
+                DWORD err = WSAGetLastError();
+                if (err == WSAENOTSOCK) {
+                    // This is not a socket! Assume it is a signaler. In this case,
+                    // we've noted down before whether it has been triggered or not
+                    // before.
+                    if (flags & FD_TRIGGERED) {
+                        hasBeenTriggered = true;
+                    }
+                } else {
+                    // Some other type of error that should definitely not happen.
+                    wsa_assert_no(err);
+                }
+            } else if (events.lNetworkEvents != 0) {
+                // Yes, something happened, the socket has been triggered.
+                hasBeenTriggered = true;
+            }
+
+            if (hasBeenTriggered) {
+                // The FD has been triggered. Move it into the according fd_sets.
+                if (flags & FD_READ) {
+                    readfds->fd_array[newReadFdCount++] = fd;
+                }
+                if (flags & FD_WRITE) {
+                    writefds->fd_array[newReadFdCount++] = fd;
+                }
+                if (flags & FD_FAILED_CONNECT) {
+                    exceptfds->fd_array[newExceptFdCount++] = fd;
+                }
+
+                ++triggeredFdCount;
+            }
+        }
+
+        readfds->fd_count = newReadFdCount;
+        writefds->fd_count = newWriteFdCount;
+        exceptfds->fd_count = newExceptFdCount;
+
         WSASetLastError(err);
-        return 1;
+        return triggeredFdCount;
+
     } else if (ret == WSA_WAIT_TIMEOUT) {
         // Timeout.
         WSASetLastError(err);
