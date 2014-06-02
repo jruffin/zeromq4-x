@@ -83,8 +83,6 @@ int winselect (
             eventsToWaitFor, FALSE, timeoutMs, FALSE);
     DWORD err = WSAGetLastError();
 
-    start = GetTickCount();
-
     // Deregister ourselves from the signalers
     for (i=0; i < signalerCount; ++i) {
         // If the method returns true, we were still in the event list
@@ -143,7 +141,7 @@ int winselect (
                     readfds->fd_array[newReadFdCount++] = fd;
                 }
                 if (flags & FD_WRITE) {
-                    writefds->fd_array[newReadFdCount++] = fd;
+                    writefds->fd_array[newWriteFdCount++] = fd;
                 }
                 if (flags & FD_FAILED_CONNECT) {
                     exceptfds->fd_array[newExceptFdCount++] = fd;
