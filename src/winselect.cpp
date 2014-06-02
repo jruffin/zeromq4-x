@@ -31,7 +31,6 @@ int winselect (
     size_t i;
     if (readfds) {
         for (i=0; i < readfds->fd_count; ++i) {
-            // Assume that the entry is a socket. Try associating it to the event
             SOCKET sock = readfds->fd_array[i];
             sockEvents[sock] |= FD_READ | FD_CLOSE | FD_ACCEPT;
         }
@@ -39,7 +38,6 @@ int winselect (
 
     if (writefds) {
         for (i=0; i < writefds->fd_count; ++i) {
-            // Assume that the entry is a socket. Try associating it to the event
             SOCKET sock = writefds->fd_array[i];
             sockEvents[sock] |= FD_WRITE | FD_CONNECT;
         }
@@ -47,7 +45,6 @@ int winselect (
 
     if (exceptfds) {
         for (i=0; i < exceptfds->fd_count; ++i) {
-            // Assume that the entry is a socket. Try associating it to the event
             SOCKET sock = exceptfds->fd_array[i];
             sockEvents[sock] |= FD_OOB | FD_FAILED_CONNECT;
         }
@@ -55,6 +52,7 @@ int winselect (
 
     std::map<SOCKET, long>::iterator it;
     for (it = sockEvents.begin(); it != sockEvents.end(); ++it) {
+        // Assume that the entry is a socket. Try associating it to the event
         int rc = WSAEventSelect(it->first, eventsToWaitFor[0], it->second);
         if (rc == SOCKET_ERROR) {
             DWORD err = WSAGetLastError();
@@ -86,8 +84,8 @@ int winselect (
     // Deregister ourselves from the signalers
     for (i=0; i < signalerCount; ++i) {
         // If the method returns true, we were still in the event list
-        // of the signaler. That's a sign that the signaller is not the one
-        // that triggered us. If the method returns false the exact opposite is true:
+        // of the signaler. That's a sign that this is not the one that triggered us.
+        // If the method returns false the exact opposite is true:
         // the signaler in signalers[] that does NOT have us in its list anymore has triggered us!
         bool signalerDidNotTrigger = signalers[i]->removeWaitingEvent((zmq::fd_t) eventsToWaitFor[0]);
 
