@@ -237,6 +237,9 @@ int zmq::signaler_t::wait (int timeout_)
     // using winselect() but 40% faster latency-wise on the old
     // CE4.2 platform used for testing.
     DWORD ret = WSAWaitForMultipleEvents(1, &internalEvent, FALSE, timeout_, FALSE);
+    // Yield, because the thread that has signalled us is now inactive.
+    // We want to return to it!
+    Sleep(0);
     wsa_assert(ret != WSA_WAIT_FAILED);
     int rc = 0; // Timeout
     if (ret == WSA_WAIT_EVENT_0) {
@@ -366,7 +369,6 @@ int zmq::signaler_t::make_fdpair (fd_t *r_, fd_t *w_)
     *w_ = INVALID_SOCKET;
     *r_ = INVALID_SOCKET;
 
-#ifndef ZMQ_HAVE_WINCE
     //  Create listening socket.
     SOCKET listener;
     listener = open_socket (AF_INET, SOCK_STREAM, 0);
@@ -432,19 +434,8 @@ int zmq::signaler_t::make_fdpair (fd_t *r_, fd_t *w_)
     //  Release the kernel object
     brc = CloseHandle (sync);
     win_assert (brc != 0);
-#else
-    // Create a WinSock event that will be passed around like an FD.
-    // Those fake FDs _must_ be used with winselect(), a normal select()
-    // will not like them.
-    *r_ = (zmq::fd_t) WSACreateEvent();
-    int saved_errno = WSAGetLastError();
-#endif
 
-#ifndef ZMQ_HAVE_WINCE
     if (*r_ != INVALID_SOCKET) {
-#else
-    if ((WSAEVENT) *r_ != WSA_INVALID_EVENT) {
-#endif
 #   if !defined _WIN32_WCE
         //  On Windows, preventing sockets to be inherited by child processes.
         brc = SetHandleInformation ((HANDLE) *r_, HANDLE_FLAG_INHERIT, 0);
@@ -453,14 +444,12 @@ int zmq::signaler_t::make_fdpair (fd_t *r_, fd_t *w_)
         return 0;
     }
     else {
-#ifndef ZMQ_HAVE_WINCE
         //  Cleanup writer if connection failed
         if (*w_ != INVALID_SOCKET) {
             rc = closesocket (*w_);
             wsa_assert (rc != SOCKET_ERROR);
             *w_ = INVALID_SOCKET;
         }
-#endif
         //  Set errno from saved value
         errno = wsa_error_to_errno (saved_errno);
         return -1;

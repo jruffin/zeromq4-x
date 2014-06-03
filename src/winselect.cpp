@@ -79,6 +79,9 @@ int winselect (
     // Wait for any of the events...
     DWORD ret = WSAWaitForMultipleEvents(eventCount,
             eventsToWaitFor, FALSE, timeoutMs, FALSE);
+    // Yield, because the thread that has signalled us is now inactive.
+    // We want to return to it!
+    Sleep(0);
     DWORD err = WSAGetLastError();
 
     // Deregister ourselves from the signalers
@@ -149,9 +152,17 @@ int winselect (
             }
         }
 
-        readfds->fd_count = newReadFdCount;
-        writefds->fd_count = newWriteFdCount;
-        exceptfds->fd_count = newExceptFdCount;
+        if (readfds) {
+            readfds->fd_count = newReadFdCount;
+        }
+
+        if (writefds) {
+            writefds->fd_count = newWriteFdCount;
+        }
+
+        if (exceptfds) {
+            exceptfds->fd_count = newExceptFdCount;
+        }
 
         WSACloseEvent(eventsToWaitFor[0]);
         WSASetLastError(err);
