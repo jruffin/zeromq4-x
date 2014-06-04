@@ -143,6 +143,9 @@ void zmq::signaler_t::send ()
 #elif defined ZMQ_HAVE_WINCE
     EnterCriticalSection(&cs);
 
+    int priority = CeGetThreadPriority(GetCurrentThread());
+    CeSetThreadPriority(GetCurrentThread(), 247);
+
     // Set the internal event
     WSASetEvent(internalEvent);
 
@@ -155,6 +158,8 @@ void zmq::signaler_t::send ()
     // Delete the entire event set to signal whoever reacted to WSASetEvent()
     // that we are the one who triggered the event.
     waitingEvents.clear();
+
+    CeSetThreadPriority(GetCurrentThread(), priority);
 
     LeaveCriticalSection(&cs);
 #elif defined ZMQ_HAVE_WINDOWS
@@ -233,13 +238,22 @@ int zmq::signaler_t::wait (int timeout_)
         timeout.tv_usec = timeout_ % 1000 * 1000;
     }
 #ifdef ZMQ_HAVE_WINCE
+    int priority = CeGetThreadPriority(GetCurrentThread());
+    CeSetThreadPriority(GetCurrentThread(), 247);
+
     // Directly wait for the internal event. Less elegant than
     // using winselect() but 40% faster latency-wise on the old
     // CE4.2 platform used for testing.
     DWORD ret = WSAWaitForMultipleEvents(1, &internalEvent, FALSE, timeout_, FALSE);
-    // Yield, because the thread that has signalled us is now inactive.
-    // We want to return to it!
-    Sleep(0);
+
+    if (ret == WSA_WAIT_EVENT_0) {
+        // Yield, because the thread that has signalled us is now inactive.
+        // We want to return to it!
+        Sleep(0);
+    }
+
+    CeSetThreadPriority(GetCurrentThread(), priority);
+
     wsa_assert(ret != WSA_WAIT_FAILED);
     int rc = 0; // Timeout
     if (ret == WSA_WAIT_EVENT_0) {

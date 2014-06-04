@@ -76,12 +76,20 @@ int winselect (
         timeoutMs = (timeout->tv_sec*1000) + (timeout->tv_usec/1000);
     }
 
+    int priority = CeGetThreadPriority(GetCurrentThread());
+    CeSetThreadPriority(GetCurrentThread(), 247);
+
     // Wait for any of the events...
     DWORD ret = WSAWaitForMultipleEvents(eventCount,
             eventsToWaitFor, FALSE, timeoutMs, FALSE);
-    // Yield, because the thread that has signalled us is now inactive.
-    // We want to return to it!
-    Sleep(0);
+
+    if (ret >= WSA_WAIT_EVENT_0 && ret < WSA_WAIT_EVENT_0 + eventCount) {
+        // Yield, because the thread that has signalled us is now inactive.
+        // We want to return to it!
+        Sleep(0);
+    }
+
+    CeSetThreadPriority(GetCurrentThread(), priority);
     DWORD err = WSAGetLastError();
 
     // Deregister ourselves from the signalers
@@ -116,24 +124,18 @@ int winselect (
             long flags = it->second;
             bool hasBeenTriggered = false;
 
-            WSANETWORKEVENTS events;
-            int rc = WSAEnumNetworkEvents(it->first, NULL, &events);
-
-            if (rc == SOCKET_ERROR) {
-                DWORD err = WSAGetLastError();
-                if (err == WSAENOTSOCK) {
-                    // This is not a socket! Assume it is a signaler. In this case,
-                    // we've noted down whether it has been triggered or not beforehand.
-                    if (flags & FD_TRIGGERED) {
-                        hasBeenTriggered = true;
-                    }
-                } else {
-                    // Some other type of error that should definitely not happen.
-                    wsa_assert_no(err);
-                }
-            } else if (events.lNetworkEvents != 0) {
-                // Yes, something happened, the socket has been triggered.
+            if (flags & FD_TRIGGERED) {
+                // The FD is a signaler, and it has been triggered already!
                 hasBeenTriggered = true;
+            } else {
+                WSANETWORKEVENTS events;
+                int rc = WSAEnumNetworkEvents(it->first, NULL, &events);
+                wsa_assert(rc);
+
+                if (events.lNetworkEvents != 0) {
+                    // Yes, something happened, the socket has been triggered.
+                    hasBeenTriggered = true;
+                }
             }
 
             if (hasBeenTriggered) {
