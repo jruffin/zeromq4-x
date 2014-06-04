@@ -8,6 +8,7 @@
 
 // Made-up "triggered" flag we use internally
 #define FD_TRIGGERED 0x10000
+#define FD_SIGNALER  0x20000
 
 int winselect (
         int nfds,
@@ -76,20 +77,41 @@ int winselect (
         timeoutMs = (timeout->tv_sec*1000) + (timeout->tv_usec/1000);
     }
 
-    int priority = CeGetThreadPriority(GetCurrentThread());
-    CeSetThreadPriority(GetCurrentThread(), 247);
+    // If the timeout is zero, there is no real waiting and no
+    // context switch, only checking whether the event flags are set.
+    // In this case, no need for yielding, so no need to shuffle
+    // the priorities.
+    int priority = 0;
+    if (timeoutMs > 0) {
+        priority = CeGetThreadPriority(GetCurrentThread());
+        CeSetThreadPriority(GetCurrentThread(), 247);
+    }
 
     // Wait for any of the events...
     DWORD ret = WSAWaitForMultipleEvents(eventCount,
             eventsToWaitFor, FALSE, timeoutMs, FALSE);
 
-    if (ret >= WSA_WAIT_EVENT_0 && ret < WSA_WAIT_EVENT_0 + eventCount) {
-        // Yield, because the thread that has signalled us is now inactive.
-        // We want to return to it!
-        Sleep(0);
+    // If the timeout is larger than zero, we are waiting and
+    // there is a context switch involved. Should we return
+    // with WSA_WAIT_EVENT_0 or so, somebody triggered our event
+    // and got its execution time stolen by us as a consequence.
+    // We want to yield back to the caller, which can be done with
+    // Sleep(0) as long as the caller has the same priority as us.
+    // This is why we set it to 247 earlier - the signaler_t class
+    // sets its thread priority to 247 prior to setting the events,
+    // so we have a fair guarantee to yield to our signaler with
+    // Sleep(0) - though we might yield to another signaler like this,
+    // which is not all that bad.
+    if (timeoutMs > 0) {
+        if (ret >= WSA_WAIT_EVENT_0 && ret < WSA_WAIT_EVENT_0 + eventCount) {
+            // Yield, because the thread that has signalled us is now inactive.
+            // We want to return to it!
+            Sleep(0);
+        }
+
+        CeSetThreadPriority(GetCurrentThread(), priority);
     }
 
-    CeSetThreadPriority(GetCurrentThread(), priority);
     DWORD err = WSAGetLastError();
 
     // Deregister ourselves from the signalers
@@ -100,9 +122,14 @@ int winselect (
         // the signaler in signalers[] that does NOT have us in its list anymore has triggered us!
         bool signalerDidNotTrigger = signalers[i]->removeWaitingEvent((zmq::fd_t) eventsToWaitFor[0]);
 
+        long& flags = sockEvents[(zmq::fd_t) signalers[i]];
+
+        // Mark the FD as a signaler, useful later.
+        flags |= FD_SIGNALER;
+
         if (!signalerDidNotTrigger) {
             // This signaler triggered us, note this down in the FD flags.
-            sockEvents[(zmq::fd_t) signalers[i]] |= FD_TRIGGERED;
+            flags |= FD_TRIGGERED;
         }
     }
 
@@ -124,17 +151,24 @@ int winselect (
             long flags = it->second;
             bool hasBeenTriggered = false;
 
-            if (flags & FD_TRIGGERED) {
-                // The FD is a signaler, and it has been triggered already!
-                hasBeenTriggered = true;
+            if (flags & FD_SIGNALER) {
+                // The FD is a signaler...
+                if (flags & FD_TRIGGERED) {
+                    // ... and it has been triggered!
+                    hasBeenTriggered = true;
+                }
             } else {
+                // The FD is a socket, ask whether anything interesting happened to it
                 WSANETWORKEVENTS events;
                 int rc = WSAEnumNetworkEvents(it->first, NULL, &events);
-                wsa_assert(rc);
 
-                if (events.lNetworkEvents != 0) {
-                    // Yes, something happened, the socket has been triggered.
-                    hasBeenTriggered = true;
+                if (rc == 0) {
+                    if (events.lNetworkEvents != 0) {
+                        // Yes, something happened, the socket has been triggered.
+                        hasBeenTriggered = true;
+                    }
+                } else {
+                    wsa_assert(rc);
                 }
             }
 
